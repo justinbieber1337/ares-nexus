@@ -38,6 +38,15 @@ export interface SettleTradesCommand {
   idempotencyKeyId: string;
 }
 
+export interface UpdateBalanceCommand {
+  accountId: string;
+  asset: string;
+  amount: bigint;
+  direction: 'deposit' | 'withdraw';
+  referenceId: string;
+  idempotencyKeyId: string;
+}
+
 @Injectable()
 export class LedgerService {
   constructor(
@@ -273,6 +282,40 @@ export class LedgerService {
           idempotencyKeyId: command.idempotencyKeyId,
         });
       }
+    });
+  }
+
+  /**
+   * Update available balance for deposits/withdrawals.
+   * Treated as an external counterparty entry for audit trails.
+   */
+  async updateBalance(command: UpdateBalanceCommand): Promise<void> {
+    await this.store.transaction(async (tx) => {
+      await this.ensureBalance(tx, command.accountId, command.asset);
+      const delta = command.direction === 'deposit' ? command.amount : -command.amount;
+
+      const updated = await tx.adjustBalance(
+        command.accountId,
+        command.asset,
+        delta,
+        0n,
+        command.direction === 'withdraw' ? command.amount : undefined,
+      );
+
+      if (!updated) {
+        throw new InsufficientFundsError();
+      }
+
+      await this.recordEntry(tx, {
+        accountId: command.accountId,
+        asset: command.asset,
+        amount: command.amount,
+        balanceAfter: updated.available,
+        entryType: command.direction === 'deposit' ? 'credit' : 'debit',
+        referenceType: command.direction,
+        referenceId: command.referenceId,
+        idempotencyKeyId: command.idempotencyKeyId,
+      });
     });
   }
 

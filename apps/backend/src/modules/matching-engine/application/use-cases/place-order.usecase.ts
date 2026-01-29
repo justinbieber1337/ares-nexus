@@ -7,7 +7,6 @@ import { PlaceOrderCommand } from '../dtos/place-order.dto';
 import { OrderBookChangedEvent } from '../../domain/events/order-book-changed.event';
 import { LedgerService } from '../../../ledger/application/ledger.service';
 import { IdempotencyService } from '../../../idempotency/infrastructure/idempotency.service';
-import { MarketDataGateway } from '../../../market-data/infrastructure/market-data.gateway';
 
 @Injectable()
 export class PlaceOrderUseCase {
@@ -17,7 +16,6 @@ export class PlaceOrderUseCase {
     private readonly matchingEngineService: MatchingEngineService,
     private readonly ledgerService: LedgerService,
     private readonly idempotencyService: IdempotencyService,
-    private readonly marketDataGateway: MarketDataGateway,
   ) {}
 
   async execute(command: PlaceOrderCommand) {
@@ -105,22 +103,12 @@ export class PlaceOrderUseCase {
           updatedAt: new Date(),
         };
 
-        const orderBookChanged =
-          event.bestBidPriceTicks !== previousBestBid ||
-          event.bestAskPriceTicks !== previousBestAsk;
-        if (orderBookChanged) {
-          this.marketDataGateway.publishOrderBook(event);
-        }
-        if (trades.length) {
-          this.marketDataGateway.publishTrades({
-            marketId: command.marketId,
-            trades,
-          });
-        }
-
         return {
           trades,
           orderBookEvent: event,
+          orderBookChanged:
+            event.bestBidPriceTicks !== previousBestBid ||
+            event.bestAskPriceTicks !== previousBestAsk,
         };
       },
     });

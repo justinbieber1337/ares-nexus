@@ -2,10 +2,12 @@ import {
   WebSocketGateway,
   WebSocketServer,
   OnGatewayConnection,
+  SubscribeMessage,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Subject } from 'rxjs';
 import { bufferTime } from 'rxjs/operators';
+import { PlaceOrderUseCase } from '../../matching-engine/application/use-cases/place-order.usecase';
 
 export interface MarketDepthUpdate {
   marketId: string;
@@ -19,9 +21,16 @@ export interface TradeUpdate {
   trades: unknown[];
 }
 
+export interface MarketDataUpdatePayload {
+  marketId: string;
+  orderBook?: MarketDepthUpdate;
+  trades?: unknown[];
+}
+
 @WebSocketGateway({
   path: '/ws/market-data',
   transports: ['websocket'],
+  cors: { origin: '*' },
 })
 export class MarketDataGateway implements OnGatewayConnection {
   @WebSocketServer()
@@ -29,7 +38,7 @@ export class MarketDataGateway implements OnGatewayConnection {
 
   private readonly depthUpdates$ = new Subject<MarketDepthUpdate>();
 
-  constructor() {
+  constructor(private readonly placeOrderUseCase: PlaceOrderUseCase) {
     this.depthUpdates$
       .pipe(bufferTime(75))
       .subscribe((updates) => this.flushDepthUpdates(updates));
@@ -51,11 +60,46 @@ export class MarketDataGateway implements OnGatewayConnection {
   }
 
   publishTrades(update: TradeUpdate) {
-    this.server.to(this.marketRoom(update.marketId)).emit('trades', update.trades);
+    this.server
+      .to(this.marketRoom(update.marketId))
+      .emit('MARKET_DATA_UPDATE', {
+        marketId: update.marketId,
+        trades: update.trades,
+      } satisfies MarketDataUpdatePayload);
   }
 
   publishUserUpdate(userId: string, payload: unknown) {
     this.server.to(this.userRoom(userId)).emit('user_update', payload);
+  }
+
+  @SubscribeMessage('PLACE_ORDER')
+  async handlePlaceOrder(client: Socket, payload: any) {
+    try {
+      const result = await this.placeOrderUseCase.execute(payload);
+      if (result.orderBookChanged) {
+        this.publishOrderBook({
+          marketId: payload.marketId,
+          bestBidPriceTicks: result.orderBookEvent.bestBidPriceTicks,
+          bestAskPriceTicks: result.orderBookEvent.bestAskPriceTicks,
+          updatedAt: result.orderBookEvent.updatedAt,
+        });
+      }
+      if (result.trades.length) {
+        this.publishTrades({
+          marketId: payload.marketId,
+          trades: result.trades,
+        });
+      }
+
+      client.emit('ORDER_ACK', {
+        orderId: payload.orderId,
+        marketId: payload.marketId,
+      });
+    } catch (error: any) {
+      client.emit('ORDER_ERROR', {
+        message: error?.message ?? 'Order failed',
+      });
+    }
   }
 
   private flushDepthUpdates(updates: MarketDepthUpdate[]) {
@@ -67,10 +111,13 @@ export class MarketDataGateway implements OnGatewayConnection {
     for (const update of latestByMarket.values()) {
       this.server
         .to(this.marketRoom(update.marketId))
-        .emit('market_depth', {
-          ...update,
-          updatedAt: update.updatedAt.toISOString(),
-        });
+        .emit('MARKET_DATA_UPDATE', {
+          marketId: update.marketId,
+          orderBook: {
+            ...update,
+            updatedAt: update.updatedAt.toISOString(),
+          },
+        } satisfies MarketDataUpdatePayload);
     }
   }
 
