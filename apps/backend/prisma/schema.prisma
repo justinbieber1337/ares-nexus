@@ -1,0 +1,150 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrderSide {
+  bid
+  ask
+}
+
+enum OrderType {
+  limit
+  market
+}
+
+enum OrderStatus {
+  open
+  partially_filled
+  filled
+  canceled
+}
+
+enum LedgerEntryType {
+  credit
+  debit
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String?   @unique
+  createdAt DateTime  @default(now())
+  accounts  Account[]
+  orders    Order[]
+}
+
+model Account {
+  id        String    @id @default(cuid())
+  userId    String
+  label     String?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id])
+  balances  Balance[]
+  ledger    LedgerEntry[]
+
+  @@index([userId])
+}
+
+model Balance {
+  id        String   @id @default(cuid())
+  accountId String
+  asset     String
+  available BigInt   @db.BigInt
+  locked    BigInt   @db.BigInt
+  updatedAt DateTime @updatedAt
+  account   Account  @relation(fields: [accountId], references: [id])
+
+  @@unique([accountId, asset])
+  @@index([asset])
+}
+
+model Market {
+  id               String   @id @default(cuid())
+  symbol           String   @unique
+  baseAsset        String
+  quoteAsset       String
+  pricePrecision   Int
+  quantityPrecision Int
+  createdAt        DateTime @default(now())
+  orders           Order[]
+  trades           Trade[]
+}
+
+model Order {
+  id                String      @id @default(cuid())
+  marketId          String
+  userId            String
+  side              OrderSide
+  type              OrderType
+  status            OrderStatus @default(open)
+  priceTicks        BigInt      @db.BigInt
+  quantity          BigInt      @db.BigInt
+  remainingQuantity BigInt      @db.BigInt
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  market            Market      @relation(fields: [marketId], references: [id])
+  user              User        @relation(fields: [userId], references: [id])
+  makerTrades       Trade[]     @relation("makerTrades")
+  takerTrades       Trade[]     @relation("takerTrades")
+
+  @@index([marketId, side, status])
+  @@index([marketId, side, priceTicks, createdAt])
+  @@index([userId, createdAt])
+}
+
+model Trade {
+  id           String   @id @default(cuid())
+  marketId     String
+  takerOrderId String
+  makerOrderId String
+  takerUserId  String
+  makerUserId  String
+  priceTicks   BigInt   @db.BigInt
+  quantity     BigInt   @db.BigInt
+  executedAt   DateTime @default(now())
+  market       Market   @relation(fields: [marketId], references: [id])
+  takerOrder   Order    @relation("takerTrades", fields: [takerOrderId], references: [id])
+  makerOrder   Order    @relation("makerTrades", fields: [makerOrderId], references: [id])
+
+  @@index([marketId, executedAt])
+  @@index([takerOrderId])
+  @@index([makerOrderId])
+}
+
+model LedgerEntry {
+  id                String          @id @default(cuid())
+  accountId         String
+  idempotencyKeyId  String
+  asset             String
+  amount            BigInt          @db.BigInt
+  balanceAfter      BigInt          @db.BigInt
+  entryType         LedgerEntryType
+  referenceType     String
+  referenceId       String
+  createdAt         DateTime        @default(now())
+  account           Account         @relation(fields: [accountId], references: [id])
+  idempotencyKey    IdempotencyKey  @relation(fields: [idempotencyKeyId], references: [id])
+
+  @@index([accountId, createdAt])
+  @@index([referenceType, referenceId])
+}
+
+model IdempotencyKey {
+  id          String     @id @default(cuid())
+  accountId   String
+  scope       String
+  key         String
+  requestHash String
+  status      String
+  createdAt   DateTime   @default(now())
+  consumedAt  DateTime?
+  account     Account    @relation(fields: [accountId], references: [id])
+  ledger      LedgerEntry[]
+
+  @@unique([accountId, scope, key])
+  @@index([status])
+}
